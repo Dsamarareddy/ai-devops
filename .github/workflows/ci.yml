@@ -28,33 +28,36 @@ jobs:
         run: npm audit --audit-level=moderate
         continue-on-error: true
 
-      - name: Run secret scan with Gitleaks
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=Dsamarareddy_ai-devops-demo
+            -Dsonar.organization=dsamarareddy
+            -Dsonar.host.url=https://sonarcloud.io
+
+      - name: Post SonarQube results to platform
+        run: |
+          if [ -f .scannerwork/report-task.txt ]; then
+            curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
+              -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
+              -d @.scannerwork/report-task.txt;
+          fi
+
+      - name: Run GitLeaks secret scan
         run: |
           curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
 
-      - name: Post Gitleaks results to platform
+      - name: Post GitLeaks results to platform
         run: |
-          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
-            -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
-            -d @gitleaks-report.json
-
-      - name: Install SonarQube scanner and run SAST
-        run: |
-          npm install -g sonar-scanner
-          sonar-scanner \
-            -Dsonar.projectKey=ai-devops-demo \
-            -Dsonar.organization=Dsamarareddy \
-            -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
-
-      - name: Post SonarQube results to platform
-        run: |
-          if [ -f "sonar-report.json" ]; then
+          if [ -f gitleaks-report.json ]; then
             curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
               -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
-              -d @sonar-report.json
+              -d @gitleaks-report.json;
           fi
 
       - name: Set up Docker Buildx
@@ -71,21 +74,21 @@ jobs:
         with:
           context: .
           push: false
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-devops-demo:latest
+          tags: ${{ github.repository }}:latest
 
       - name: Run Trivy container scan
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/ai-devops-demo:latest
+          image-ref: ${{ github.repository }}:latest
           format: 'table'
         continue-on-error: true
 
-      - name: Post Trivy scan results to platform
+      - name: Post Trivy results to platform
         run: |
-          if [ -f "trivy-report.json" ]; then
+          if [ -f trivy-report.json ]; then
             curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
               -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
-              -d @trivy-report.json
+              -d @trivy-report.json;
           fi
 
       - name: Push Docker image
@@ -93,8 +96,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-devops-demo:latest
+          tags: ${{ github.repository }}:latest
 
-      # Deployment step placeholder - replace with your actual deployment action (e.g., ECS, Cloud Run, etc.)
+      # Deployment step placeholder - replace with your deployment action (e.g., ECS, Cloud Run, etc.)
       - name: Deploy to production
-        run: echo "Deploying to production... (replace with actual deployment step)"
+        run: echo "Deploy to production step goes here. Replace with your deployment action."
