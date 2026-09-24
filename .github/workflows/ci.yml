@@ -45,7 +45,7 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=Dsamarareddy_ai-devops-demo
-            -Dsonar.organization=Dsamarareddy
+            -Dsonar.organization=dsamarareddy
             -Dsonar.host.url=https://sonarcloud.io
 
       - name: Upload SonarQube scan results
