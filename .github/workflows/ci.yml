@@ -2,12 +2,11 @@ name: CI/CD Pipeline for Express Service
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 jobs:
-  build-test-scan-deploy:
+  build-test-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -28,33 +27,36 @@ jobs:
         run: npm audit --audit-level=moderate
         continue-on-error: true
 
-      - name: Run secret scan with Gitleaks
+      - name: Run SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=Dsamarareddy_ai-devops-demo
+            -Dsonar.organization=Dsamarareddy
+            -Dsonar.host.url=https://sonarcloud.io
+
+      - name: Post SonarQube scan results
+        run: |
+          if [ -f ".scannerwork/report-task.txt" ]; then
+            curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
+              -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
+              -d @.scannerwork/report-task.txt
+          fi
+
+      - name: Run GitLeaks secret scan
         run: |
           curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
 
-      - name: Post Gitleaks results to platform
+      - name: Post GitLeaks scan results
         run: |
-          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
-            -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
-            -d @gitleaks-report.json
-
-      - name: Install SonarQube scanner and run SAST
-        run: |
-          npm install -g sonar-scanner
-          sonar-scanner \
-            -Dsonar.projectKey=ai-devops-demo \
-            -Dsonar.organization=Dsamarareddy \
-            -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
-
-      - name: Post SonarQube results to platform
-        run: |
-          if [ -f "sonar-report.json" ]; then
+          if [ -f "gitleaks-report.json" ]; then
             curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
               -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
-              -d @sonar-report.json
+              -d @gitleaks-report.json
           fi
 
       - name: Set up Docker Buildx
@@ -80,7 +82,7 @@ jobs:
           format: 'table'
         continue-on-error: true
 
-      - name: Post Trivy scan results to platform
+      - name: Post Trivy scan results
         run: |
           if [ -f "trivy-report.json" ]; then
             curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
@@ -95,6 +97,14 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/ai-devops-demo:latest
 
-      # Deployment step placeholder - replace with your actual deployment action (e.g., ECS, Cloud Run, etc.)
-      - name: Deploy to production
-        run: echo "Deploying to production... (replace with actual deployment step)"
+  deploy:
+    needs: build-test-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      # Add your deployment steps here. For example, if deploying to AWS ECS, GCP Cloud Run, or another platform,
+      # insert the appropriate action and configuration. Below is a placeholder for a generic deployment step.
+      - name: Deploy to Production
+        run: echo "Deploying to production..."
