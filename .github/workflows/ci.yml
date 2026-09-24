@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install dependencies
         run: npm ci
@@ -28,36 +28,33 @@ jobs:
         run: npm audit --audit-level=moderate
         continue-on-error: true
 
-      - name: Run GitLeaks secret scan
+      - name: Secret scan with GitLeaks
         run: |
           curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
           tar -xzf gitleaks.tar.gz gitleaks
           ./gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
-      - name: Upload GitLeaks results
+      - name: Post GitLeaks results to platform
         run: |
-          curl -X POST $PLATFORM_URL/api/v1/security/scan-results -d @gitleaks-report.json
-        env:
-          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
+          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
+            -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
+            -d @gitleaks-report.json
 
-      - name: Install SonarQube scanner and run SAST
+      - name: SonarCloud SAST scan
         run: |
           npm install -g sonar-scanner
           sonar-scanner \
-            -Dsonar.projectKey=${{ github.repository }} \
-            -Dsonar.organization=${{ github.repository_owner }} \
+            -Dsonar.projectKey=Dsamarareddy_ai-devops \
+            -Dsonar.organization=Dsamarareddy \
             -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      - name: Upload SonarQube results
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+      - name: Post SonarCloud results to platform
         run: |
-          curl -X POST $PLATFORM_URL/api/v1/security/scan-results -d @.scannerwork/report-task.txt
-        env:
-          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
+          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results \
+            -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" \
+            -d @sonar-report.json
 
-      - name: Deploy to Production
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: echo "Deploy step for production goes here. Replace with your actual deployment command."
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/main'
+        run: echo "Deploy step placeholder - add your production deployment commands here"
         env:
           NODE_ENV: production
