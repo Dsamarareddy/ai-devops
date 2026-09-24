@@ -1,9 +1,8 @@
-name: Express Service CI/CD Pipeline
+name: CI/CD Pipeline for Express Service
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 jobs:
@@ -16,30 +15,39 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
 
-      - name: SonarCloud SAST scan
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          npx sonar-scanner -Dsonar.projectKey=Dsamarareddy_ai-devops-demo -Dsonar.login=$SONAR_TOKEN -Dsonar.host.url=https://sonarcloud.io
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @.scannerwork/report-task.txt
-
       - name: Secret scan with GitLeaks
         run: |
-          gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @gitleaks-report.json
+          gitleaks detect --redact --exit-code 0 --report-format sarif --report-path gitleaks-results.sarif
+      - name: Upload GitLeaks results to platform
+        run: |
+          curl -X POST "$PLATFORM_URL/api/v1/security/scan-results" -H "Content-Type: application/json" --data-binary @gitleaks-results.sarif
+        env:
+          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
+
+      - name: SAST with SonarQube/SonarCloud
+        run: |
+          sonar-scanner -Dsonar.projectKey=Dsamarareddy_ai-devops-demo -Dsonar.login=$SONAR_TOKEN
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: Upload SonarQube results to platform
+        run: |
+          if [ -f "sonar-report.json" ]; then
+            curl -X POST "$PLATFORM_URL/api/v1/security/scan-results" -H "Content-Type: application/json" --data-binary @sonar-report.json
+          fi
+        env:
+          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
 
       - name: Security audit
-        run: |
-          npm audit --audit-level=moderate > npm-audit-report.txt || true
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @npm-audit-report.txt
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,6 +55,7 @@ jobs:
       - name: Log in to Docker registry
         uses: docker/login-action@v3
         with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
@@ -57,15 +66,18 @@ jobs:
           push: false
           tags: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
 
-      - name: Run Trivy security scanner
+      - name: Run Trivy security scanner on Docker image
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
-          format: 'table'
+          format: 'json'
+          output: 'trivy-results.json'
         continue-on-error: true
+      - name: Upload Trivy results to platform
         run: |
-          echo "Trivy scan results saved to trivy-report.txt"
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @trivy-report.txt
+          curl -X POST "$PLATFORM_URL/api/v1/security/scan-results" -H "Content-Type: application/json" --data-binary @trivy-results.json
+        env:
+          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
 
       - name: Push Docker image
         uses: docker/build-push-action@v5
@@ -74,6 +86,6 @@ jobs:
           push: true
           tags: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
 
-      # Deployment step placeholder
+      # Deployment step placeholder - replace with your actual deployment action (e.g., ECS, Cloud Run, etc.)
       - name: Deploy to production
-        run: echo "Deploy to production step here (add your cloud provider action)"
+        run: echo "Deploying to production..."
