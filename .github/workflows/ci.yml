@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
-  build-test-scan-deploy:
+  build-test-scan:
+    name: Build, Test, and Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '20.x'
+          node-version: '20'
 
       - name: Install dependencies
         run: npm ci
@@ -117,12 +117,12 @@ jobs:
           load: true
           tags: ai-devops-demo:ci
 
-      - name: Run Trivy security scanner on image
+      - name: Run Trivy security scanner
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ai-devops-demo:ci
           format: 'json'
-          output: 'trivy-image-report.json'
+          output: 'trivy-report.json'
         continue-on-error: true
 
       - name: Post Trivy scan results
@@ -160,6 +160,19 @@ jobs:
           node trivy-transform.js
           curl -sS -w "\nHTTP %{http_code}\n" -X POST "https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results" -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -H "Content-Type: application/json" -d @trivy-body.json
 
-      # Deployment step placeholder - replace with your actual deployment action (e.g., ECS, Cloud Run, etc.)
-      - name: Deploy to Production
-        run: echo "Deploy to production step goes here."
+      # Add your deployment step here (e.g., ECS, Cloud Run, etc.)
+      # Example for AWS ECS (uncomment and configure if using ECS):
+      # - name: Configure AWS credentials
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Deploy to Amazon ECS
+      #   uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      #   with:
+      #     task-definition: <TASK_DEFINITION>
+      #     service: <SERVICE_NAME>
+      #     cluster: <CLUSTER_NAME>
+      #     wait-for-service-stability: true
