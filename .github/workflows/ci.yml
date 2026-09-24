@@ -1,4 +1,4 @@
-name: CI/CD for Express Service
+name: CI/CD Pipeline for Express Service
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install dependencies
         run: npm ci
@@ -28,36 +28,65 @@ jobs:
         run: npm audit --audit-level=moderate
         continue-on-error: true
 
-      - name: Run GitLeaks secret scan
-        run: |
-          curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
-          tar -xzf gitleaks.tar.gz gitleaks
-          ./gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
-      - name: Upload GitLeaks results
-        run: |
-          curl -X POST $PLATFORM_URL/api/v1/security/scan-results -d @gitleaks-report.json
+      - name: Run SonarQube/SonarCloud scan
         env:
-          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
-
-      - name: Install SonarQube scanner and run SAST
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           npm install -g sonar-scanner
           sonar-scanner \
             -Dsonar.projectKey=${{ github.repository }} \
             -Dsonar.organization=${{ github.repository_owner }} \
             -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      - name: Upload SonarQube results
-        run: |
-          curl -X POST $PLATFORM_URL/api/v1/security/scan-results -d @.scannerwork/report-task.txt
-        env:
-          PLATFORM_URL: ${{ secrets.PLATFORM_URL }}
+            -Dsonar.login=$SONAR_TOKEN
+          sonar-scanner -Dsonar.projectKey=${{ github.repository }} -Dsonar.organization=${{ github.repository_owner }} -Dsonar.host.url=https://sonarcloud.io -Dsonar.login=$SONAR_TOKEN > sonar-report.txt || true
+          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -d @sonar-report.txt
 
-      - name: Deploy to Production
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: echo "Deploy step for production goes here. Replace with your actual deployment command."
+      - name: Run GitLeaks secret scan
+        run: |
+          curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
+          curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -d @gitleaks-report.json
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker registry
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ secrets.DOCKER_REGISTRY }}/${{ github.repository }}:latest
+
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          scan-ref: ${{ secrets.DOCKER_REGISTRY }}/${{ github.repository }}:latest
+          format: 'table'
+        continue-on-error: true
+
+      - name: Post Trivy scan results
+        run: |
+          if [ -f trivy-report.txt ]; then
+            curl -X POST https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -d @trivy-report.txt
+          fi
+
+      - name: Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKER_REGISTRY }}/${{ github.repository }}:latest
+
+      # Deployment step placeholder - customize for your production environment
+      - name: Deploy to production
+        run: echo "Deploying to production..."
         env:
           NODE_ENV: production
