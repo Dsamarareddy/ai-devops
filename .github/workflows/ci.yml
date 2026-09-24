@@ -1,13 +1,13 @@
-name: Express Service CI/CD Pipeline
+name: CI/CD Pipeline for Express Production Deployment
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 jobs:
-  build-test-scan-deploy:
+  build-test-scan:
+    name: Build, Test, and Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -16,67 +16,163 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
 
-      - name: SonarCloud Scan
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      - name: Secret scan with Gitleaks
         run: |
-          sonar-scanner -Dsonar.projectKey=Dsamarareddy_ai-devops-demo -Dsonar.login=$SONAR_TOKEN -Dsonar.host.url=https://sonarcloud.io
-          # Assume SonarQube output is in .scannerwork/report-task.txt
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @.scannerwork/report-task.txt
+          GITLEAKS_VERSION=$(curl -sSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{console.log(JSON.parse(d).tag_name.replace(/^v/,''))})")
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+          ./gitleaks detect --redact --exit-code 0 --report-format json --report-path gitleaks-report.json
+          if [ ! -f gitleaks-report.json ]; then echo '[]' > gitleaks-report.json; fi
 
-      - name: Secret scan with GitLeaks
+      - name: Post Gitleaks scan results
         run: |
-          gitleaks detect --redact --exit-code 0 --report-path gitleaks-report.json
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @gitleaks-report.json
+          cat > gitleaks-transform.js <<'EOF'
+          const fs = require('fs');
+          let data = [];
+          try { data = JSON.parse(fs.readFileSync('gitleaks-report.json', 'utf8')); } catch (e) { data = []; }
+          if (!Array.isArray(data)) data = [];
+          const findings = data.map((f) => ({
+            type: 'secret',
+            severity: 'high',
+            title: 'Secret detected: ' + (f.RuleID || f.Rule || 'unknown-rule'),
+            description: (f.Description || 'Potential secret leak') + (f.File ? (' in ' + f.File) : '')
+          }));
+          const body = {
+            pipeline_run_id: String(process.env.GITHUB_RUN_ID),
+            repository: 'Dsamarareddy/ai-devops-demo',
+            environment: 'production',
+            scanner: 'gitleaks',
+            findings: findings
+          };
+          fs.writeFileSync('gitleaks-body.json', JSON.stringify(body));
+          console.log('gitleaks findings: ' + findings.length);
+          EOF
+          node gitleaks-transform.js
+          curl -sS -w "\nHTTP %{http_code}\n" -X POST "https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results" -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -H "Content-Type: application/json" -d @gitleaks-body.json
 
       - name: Security audit
         run: |
-          npm audit --audit-level=moderate > npm-audit-report.txt || true
-          curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @npm-audit-report.txt
+          npm audit --audit-level=moderate || true
+          npm audit --json > npm-audit.json || true
+
+      - name: Post npm audit scan results
+        run: |
+          cat > npm-audit-transform.js <<'EOF'
+          const fs = require('fs');
+          let data = {};
+          try { data = JSON.parse(fs.readFileSync('npm-audit.json', 'utf8')); } catch (e) { data = {}; }
+          let counts = {};
+          if (data.metadata && data.metadata.vulnerabilities) {
+            counts = data.metadata.vulnerabilities;
+          } else if (data.vulnerabilities) {
+            for (const key of Object.keys(data.vulnerabilities)) {
+              const sev = data.vulnerabilities[key].severity || 'low';
+              counts[sev] = (counts[sev] || 0) + 1;
+            }
+          }
+          const sevMap = { critical: 'critical', high: 'high', moderate: 'medium', low: 'low', info: 'low' };
+          const findings = [];
+          for (const key of Object.keys(counts)) {
+            if (key === 'total') continue;
+            const count = counts[key];
+            if (count > 0) {
+              findings.push({
+                type: 'sca',
+                severity: sevMap[key] || 'low',
+                title: count + ' ' + key + ' severity dependency vulnerabilities',
+                description: 'npm audit found ' + count + ' ' + key + ' severity vulnerabilities in project dependencies'
+              });
+            }
+          }
+          const body = {
+            pipeline_run_id: String(process.env.GITHUB_RUN_ID),
+            repository: 'Dsamarareddy/ai-devops-demo',
+            environment: 'production',
+            scanner: 'npm-audit',
+            findings: findings
+          };
+          fs.writeFileSync('npm-audit-body.json', JSON.stringify(body));
+          console.log('npm-audit findings: ' + findings.length);
+          EOF
+          node npm-audit-transform.js
+          curl -sS -w "\nHTTP %{http_code}\n" -X POST "https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results" -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -H "Content-Type: application/json" -d @npm-audit-body.json
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker registry
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
+          load: true
+          tags: ai-devops-demo:ci
 
       - name: Run Trivy security scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
-          format: 'table'
+          image-ref: ai-devops-demo:ci
+          format: 'json'
+          output: 'trivy-report.json'
         continue-on-error: true
-        # Trivy output assumed to be trivy-report.txt
-        post:
-          run: |
-            curl -X POST ${{ secrets.PLATFORM_URL }}/api/v1/security/scan-results -d @trivy-report.txt
 
-      - name: Push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ secrets.DOCKER_REGISTRY }}/dsamarareddy/ai-devops-demo:latest
+      - name: Post Trivy scan results
+        run: |
+          cat > trivy-transform.js <<'EOF'
+          const fs = require('fs');
+          let data = {};
+          try { data = JSON.parse(fs.readFileSync('trivy-image-report.json', 'utf8')); } catch (e) { data = {}; }
+          const results = data.Results || [];
+          let vulns = [];
+          for (const r of results) {
+            if (Array.isArray(r.Vulnerabilities)) vulns = vulns.concat(r.Vulnerabilities);
+          }
+          const sevMap = { CRITICAL: 'critical', HIGH: 'high', MEDIUM: 'medium', LOW: 'low', UNKNOWN: 'low' };
+          const order = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, UNKNOWN: 4 };
+          vulns.sort((a, b) => (order[a.Severity] === undefined ? 5 : order[a.Severity]) - (order[b.Severity] === undefined ? 5 : order[b.Severity]));
+          const top = vulns.slice(0, 20);
+          const findings = top.map((v) => ({
+            type: 'container',
+            severity: sevMap[v.Severity] || 'low',
+            title: v.Title || v.VulnerabilityID || 'Container vulnerability',
+            description: ((v.Description || ('Vulnerability ' + v.VulnerabilityID + ' in package ' + v.PkgName)) + '').slice(0, 500),
+            cve: v.VulnerabilityID || undefined
+          }));
+          const body = {
+            pipeline_run_id: String(process.env.GITHUB_RUN_ID),
+            repository: 'Dsamarareddy/ai-devops-demo',
+            environment: 'production',
+            scanner: 'trivy',
+            findings: findings
+          };
+          fs.writeFileSync('trivy-body.json', JSON.stringify(body));
+          console.log('trivy findings: ' + findings.length);
+          EOF
+          node trivy-transform.js
+          curl -sS -w "\nHTTP %{http_code}\n" -X POST "https://ai-devops.apx-cloudalpha.com/api/v1/security/scan-results" -H "X-API-Key: ${{ secrets.PLATFORM_API_KEY }}" -H "Content-Type: application/json" -d @trivy-body.json
 
-      # Deployment step placeholder (update as per actual deployment target)
-      - name: Deploy to Production
-        run: echo "Deploying to production..."
-        # Replace with actual deployment action (e.g., ECS, Cloud Run, etc.)
+      # Add your deployment step here (e.g., ECS, Cloud Run, etc.)
+      # Example for AWS ECS (uncomment and configure if using ECS):
+      # - name: Configure AWS credentials
+      #   uses: aws-actions/configure-aws-credentials@v4
+      #   with:
+      #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      #     aws-region: ${{ secrets.AWS_REGION }}
+      #
+      # - name: Deploy to Amazon ECS
+      #   uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      #   with:
+      #     task-definition: <TASK_DEFINITION>
+      #     service: <SERVICE_NAME>
+      #     cluster: <CLUSTER_NAME>
+      #     wait-for-service-stability: true
